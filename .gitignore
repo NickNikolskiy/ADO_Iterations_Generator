@@ -1,0 +1,58 @@
+# .gitignore for .NET/C# Azure DevOps Iterations Generator
+# Build results
+bin/
+obj/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# VS Code
+.vscode/
+.vs/
+
+# Rider
+.idea/
+*.sln.iml
+
+# DotCover
+*.dotCover
+
+# NuGet
+*.nupkg
+# NuGet Packages folder
+packages/
+# NuGet Symbol Packages
+*.snupkg
+
+# Logs
+*.log
+
+# Docker
+Dockerfile*
+*.dockerignore
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Others
+*.vspscc
+*.vssscc
+_ReSharper*/
+
+# Test results
+TestResults/
+
+# Visual Studio Code Workspace Storage
+.vscode-test/
+
+# Temporary files
+~$*
+*.tmp
+*.bak
+
+# Tooling
+/.tools/

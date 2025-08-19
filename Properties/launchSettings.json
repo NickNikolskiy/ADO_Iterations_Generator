@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "ADO_Iterations_Generator": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}
