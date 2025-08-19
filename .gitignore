@@ -53,6 +53,7 @@ TestResults/
 ~$*
 *.tmp
 *.bak
+*.json
 
 # Tooling
 /.tools/
