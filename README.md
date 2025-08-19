@@ -1,3 +1,17 @@
+## ADO Iterations Generator
+
+This repository contains a small .NET tool to generate and assign Azure DevOps iterations.
+
+Registry tweak (PowerShell)
+
+If you need to raise the service limits for team iterations/area paths on the server, run the following PowerShell commands in the appropriate lightrail for tfs:
+
+```powershell
+Set-ServiceRegistryValue -RegistryPath "/Service/Agile/Settings/MaxAllowedTeamIterations" -Value "10000"
+Set-ServiceRegistryValue -RegistryPath "/Service/Agile/Settings/MaxAllowedTeamAreaPaths" -Value "10000"
+```
+
+Run these only with proper administrative permissions and understanding of server implications.
 # Azure DevOps Iterations Generator
 
 A command-line tool for batch-creating iterations (sprints) in Azure DevOps projects using the REST API.
@@ -31,6 +45,7 @@ A command-line tool for batch-creating iterations (sprints) in Azure DevOps proj
 ## Usage
 Run the generator with required arguments:
 
+### Default Mode: Autogenerate Iterations
 ```pwsh
 # Example usage
 # Replace values as needed
@@ -46,6 +61,12 @@ dotnet run -- \
   --length 7
 ```
 
+### Assign-All-To-Team Mode
+Assign all existing iterations in the project to a team:
+```pwsh
+dotnet run -- --adourl https://codedev.ms --organization org --project prj01 --pat <your-pat> --mode assign-all-to-team --team "My Team"
+```
+
 ### Arguments
 - `--adourl`         : Base Azure DevOps URL (e.g., https://codedev.ms)
 - `--organization`   : Organization name
@@ -55,6 +76,8 @@ dotnet run -- \
 - `--startdate`      : Start date for first iteration (YYYY-MM-DD)
 - `--count`          : Number of iterations to create
 - `--length`         : Number of days per iteration
+- `--mode`           : Operation mode (`autogenerate` or `assign-all-to-team`)
+- `--team`           : Team name (required for `assign-all-to-team` mode)
 
 ### Example
 Create 5 sprints, each 7 days long, starting August 1, 2024:
@@ -63,7 +86,8 @@ dotnet run -- --adourl https://codedev.ms --organization org --project prj01 --p
 ```
 
 ## Output
-- Iterations are created in Azure DevOps under the specified project.
+- In `autogenerate` mode, iterations are created in Azure DevOps under the specified project.
+- In `assign-all-to-team` mode, all existing iterations are assigned to the specified team.
 - If an iteration name already exists anywhere in the project, it is skipped.
 - Console output shows progress and any errors.
 

@@ -9,7 +9,13 @@ namespace IterationGenerator
 {
     public class AzureDevOpsClient
     {
-        private readonly HttpClient _http;
+        // Thrown when the target team already has the maximum allowed subscribed iterations
+        public class TeamIterationLimitReachedException : Exception
+        {
+            public TeamIterationLimitReachedException(string message) : base(message) { }
+        }
+
+    internal readonly HttpClient _http;
         private readonly string _organization;
         private readonly string _adourl;
         public string ApiVersion { get; }
@@ -24,11 +30,15 @@ namespace IterationGenerator
             var url = $"{_adourl}/{_organization}/";
             Console.WriteLine(url);
 
-            _http = new HttpClient
+            var handler = new HttpClientHandler
+            {
+                // Do not automatically follow redirects so we can detect sign-in redirects
+                AllowAutoRedirect = false
+            };
+            _http = new HttpClient(handler)
             {
                 BaseAddress = new Uri(url)
             };
-            Console.WriteLine($"PAT = {pat}");
             var token = ":" + pat; // leading colon
             var base64 = Convert.ToBase64String(Encoding.ASCII.GetBytes(token));
             _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", base64);
@@ -109,31 +119,81 @@ namespace IterationGenerator
         {
             var url = $"{project}/{Uri.EscapeDataString(team)}/_apis/work/teamsettings/iterations?api-version={ApiVersion}";
 
-            var obj = new System.Text.Json.Nodes.JsonObject();
-            if (iterationNode.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.Number)
+            // Collect candidate payloads to try, in order. We'll try identifier (GUID), numeric id, and iterationId field.
+            var candidates = new System.Collections.Generic.List<System.Text.Json.Nodes.JsonObject>();
+
+            // Candidate: identifier GUID
+            if (iterationNode.TryGetProperty("identifier", out var identProp) && identProp.ValueKind == JsonValueKind.String)
             {
-                obj["id"] = idProp.GetInt32();
-            }
-            if (iterationNode.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String)
-            {
-                obj["name"] = nameProp.GetString();
-            }
-            if (iterationNode.TryGetProperty("attributes", out var attrs))
-            {
-                // Convert JsonElement -> JsonNode safely
-                obj["attributes"] = System.Text.Json.Nodes.JsonNode.Parse(attrs.GetRawText());
+                var o = new System.Text.Json.Nodes.JsonObject();
+                o["id"] = identProp.GetString();
+                if (iterationNode.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String) o["name"] = nameProp.GetString();
+                candidates.Add(o);
             }
 
-            using var content = new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json");
-            using var resp = await _http.PostAsync(url, content);
-
-            var respBody = await resp.Content.ReadAsStringAsync();
-            if (!resp.IsSuccessStatusCode)
+            // Candidate: numeric id (if present)
+            if (iterationNode.TryGetProperty("id", out var idProp))
             {
-                throw new HttpRequestException($"POST {url} failed: {(int)resp.StatusCode} {resp.ReasonPhrase}\nResponse body:\n{respBody}\nRequest body:\n{content}");
+                var o = new System.Text.Json.Nodes.JsonObject();
+                if (idProp.ValueKind == JsonValueKind.Number && idProp.TryGetInt32(out var intId))
+                {
+                    o["id"] = intId;
+                }
+                else if (idProp.ValueKind == JsonValueKind.String)
+                {
+                    o["id"] = idProp.GetString();
+                }
+                else
+                {
+                    o["id"] = idProp.GetRawText();
+                }
+                if (iterationNode.TryGetProperty("name", out var nameProp2) && nameProp2.ValueKind == JsonValueKind.String) o["name"] = nameProp2.GetString();
+                candidates.Add(o);
             }
 
-            return resp;
+            // Candidate: use 'iterationId' property name (some APIs expect this)
+            if (iterationNode.TryGetProperty("identifier", out var identProp2) && identProp2.ValueKind == JsonValueKind.String)
+            {
+                var o = new System.Text.Json.Nodes.JsonObject();
+                o["iterationId"] = identProp2.GetString();
+                if (iterationNode.TryGetProperty("name", out var nameProp3) && nameProp3.ValueKind == JsonValueKind.String) o["name"] = nameProp3.GetString();
+                candidates.Add(o);
+            }
+
+            // If we have no candidates, at least attempt to send the whole node as body
+            if (candidates.Count == 0)
+            {
+                var raw = System.Text.Json.Nodes.JsonNode.Parse(iterationNode.GetRawText()) as System.Text.Json.Nodes.JsonObject;
+                if (raw != null) candidates.Add(raw);
+            }
+
+            System.Text.StringBuilder aggErrors = new System.Text.StringBuilder();
+            foreach (var obj in candidates)
+            {
+                using var content = new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json");
+                using var resp = await _http.PostAsync(url, content);
+                var respBody = await resp.Content.ReadAsStringAsync();
+                if (resp.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"Added team iteration using payload: {obj.ToJsonString()}");
+                    return resp;
+                }
+                else
+                {
+                    // Detect the specific error where the team has >300 iterations subscribed
+                    if ((respBody != null && respBody.IndexOf("subscribed to 301 iterations", StringComparison.OrdinalIgnoreCase) >= 0)
+                        || (respBody != null && respBody.IndexOf("This team is subscribed to", StringComparison.OrdinalIgnoreCase) >= 0)
+                        || (respBody != null && respBody.IndexOf("VS403228", StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        throw new TeamIterationLimitReachedException("Target team has reached the maximum allowed subscribed iterations (300). Please reduce team subscriptions before retrying.");
+                    }
+
+                    aggErrors.AppendLine($"Attempt with payload {obj.ToJsonString()} failed: {(int)resp.StatusCode} {resp.ReasonPhrase}\nResponse: {respBody}");
+                }
+            }
+
+            // All attempts failed — throw with aggregated diagnostics
+            throw new HttpRequestException($"POST {url} failed for all candidate payloads. Details:\n" + aggErrors.ToString());
         }
 
         
@@ -170,6 +230,38 @@ namespace IterationGenerator
             {
                 Console.WriteLine($"GET to iterations endpoint failed. Status: {(int)resp.StatusCode} {resp.ReasonPhrase}\nResponse body:\n{respBody}");
                 return false;
+            }
+        }
+
+        // Get iterations JSON for a project (recursive depth). Throws HttpRequestException with body when non-success
+        public async Task<JsonElement> GetProjectIterationsJsonAsync(string project, int depth = 10)
+        {
+            string url = $"{project}/_apis/wit/classificationnodes/iterations?api-version={ApiVersion}&$depth={depth}";
+            Console.WriteLine($"DEBUG: GET Iterations JSON URL: {_http.BaseAddress}{url}");
+            using var resp = await _http.GetAsync(url);
+            var respBody = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException($"GET {url} failed: {(int)resp.StatusCode} {resp.ReasonPhrase}\nResponse body:\n{respBody}");
+            }
+
+            // Ensure response is JSON
+            // Quick heuristic: if Content-Type is HTML or body starts with '<', treat as auth/HTML redirect
+            var contentType = resp.Content.Headers.ContentType?.MediaType ?? string.Empty;
+            if (contentType.Contains("html") || respBody.TrimStart().StartsWith("<"))
+            {
+                var snippet = respBody.Length > 2048 ? respBody.Substring(0, 2048) + "...[truncated]" : respBody;
+                throw new HttpRequestException($"GET {url} returned HTML (likely a sign-in page or redirect). This usually means authentication failed or the URL is incorrect. Response snippet:\n{snippet}");
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(respBody);
+                return doc.RootElement.Clone();
+            }
+            catch (JsonException)
+            {
+                throw new HttpRequestException($"GET {url} returned non-JSON response. Response body (truncated):\n{(respBody.Length > 2048 ? respBody.Substring(0, 2048) + "...[truncated]" : respBody)}");
             }
         }
     }
