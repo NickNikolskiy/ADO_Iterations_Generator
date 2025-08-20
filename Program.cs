@@ -98,8 +98,6 @@ namespace IterationGenerator
                     var outPath = System.IO.Path.Combine(System.Environment.CurrentDirectory, $"project_iterations_{project}.json");
                     System.IO.File.WriteAllText(outPath, json);
                     var snippet = json.Length > 4096 ? json.Substring(0, 4096) + "...[truncated]" : json;
-                    Console.WriteLine($"Wrote project iterations JSON to: {outPath}");
-                    Console.WriteLine("DEBUG: Project iterations JSON snippet:\n" + snippet);
                 }
                 catch (Exception ex)
                 {
@@ -123,12 +121,6 @@ namespace IterationGenerator
 
         private static async Task AssignRecursive(JsonElement node, AzureDevOpsClient client, string project, string team)
         {
-            // Log node for inspection
-            try
-            {
-                Console.WriteLine("DEBUG: Iteration node: " + node.GetRawText());
-            }
-            catch { }
 
             bool hasId = node.TryGetProperty("id", out var idProp) && (idProp.ValueKind == JsonValueKind.Number || idProp.ValueKind == JsonValueKind.String);
             bool hasIdentifier = node.TryGetProperty("identifier", out var identProp) && identProp.ValueKind == JsonValueKind.String;

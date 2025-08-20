@@ -49,36 +49,90 @@ namespace IterationGenerator
         // Returns dynamic parsed response (id, name, path ...)
         public async Task<JsonElement> CreateIterationNodeAsync(string project, string parentPath, string name, DateTime? startDate = null, DateTime? finishDate = null)
         {
-            // Global duplicate check: recursively search all iterations in the project
+            // Retrieve full iteration tree for duplicate detection and path matching
             string allUrl = $"{project}/_apis/wit/classificationnodes/iterations?api-version={ApiVersion}&$depth=10";
             using var getResp = await _http.GetAsync(allUrl);
             var getRespBody = await getResp.Content.ReadAsStringAsync();
+
+            // Compute desired full path (as returned by GET) to check for an existing node
+            // and compute a project-relative postParentPath for POST (omit the project name)
+            string desiredFullPath;
+            string? postParentPath = null;
+
+            // Normalize incoming parentPath (may be null, project name, or a GET "path" like "\MyProject\Iteration\Parent")
+            var parentNorm = string.IsNullOrWhiteSpace(parentPath) ? null : parentPath.Trim();
+            bool parentIsProject = parentNorm != null && string.Equals(parentNorm.Trim('\\'), project, StringComparison.OrdinalIgnoreCase);
+
+            if (parentNorm == null || parentIsProject)
+            {
+                // Creating directly under project root (no path query)
+                desiredFullPath = "\\" + project + "\\" + name;
+                postParentPath = null;
+            }
+            else
+            {
+                // parentNorm may or may not start with a leading backslash and may or may not include the project name
+                var p = parentNorm.StartsWith("\\") ? parentNorm.TrimStart('\\') : parentNorm; // remove leading backslash
+
+                // If the provided parent includes the project at the start, strip it to compute project-relative path
+                if (p.StartsWith(project + "\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    var after = p.Substring(project.Length).TrimStart('\\');
+                    // POST path must be project-relative WITHOUT a leading backslash
+                    postParentPath = after;
+                    desiredFullPath = "\\" + project + "\\" + after + "\\" + name;
+                }
+                else
+                {
+                    // parent did not include project; assume it is already project-relative (e.g. "Iteration\Parent")
+                    postParentPath = p;
+                    desiredFullPath = "\\" + project + "\\" + p + "\\" + name;
+                }
+            }
+
+            // If GET succeeded, search for an existing node with the exact desired path
             if (getResp.IsSuccessStatusCode)
             {
                 using var doc = JsonDocument.Parse(getRespBody);
-                // Recursively search for duplicate name
-                bool FoundDuplicate(JsonElement node)
+
+                bool found = false;
+                JsonElement foundNode = default;
+
+                void Traverse(JsonElement node)
                 {
-                    if (node.TryGetProperty("name", out var n) && n.GetString() == name)
-                        return true;
+                    if (found) return;
+                    if (node.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String && p.GetString() == desiredFullPath)
+                    {
+                        found = true;
+                        foundNode = node.Clone();
+                        return;
+                    }
                     if (node.TryGetProperty("children", out var children) && children.ValueKind == JsonValueKind.Array)
                     {
                         foreach (var child in children.EnumerateArray())
                         {
-                            if (FoundDuplicate(child)) return true;
+                            Traverse(child);
+                            if (found) return;
                         }
                     }
-                    return false;
                 }
-                if (FoundDuplicate(doc.RootElement))
+
+                Traverse(doc.RootElement);
+                if (found)
                 {
-                    Console.WriteLine($"Iteration '{name}' already exists anywhere in project. Skipping creation.");
-                    return doc.RootElement.Clone(); // Optionally, return the root or null
+                    Console.WriteLine($"Iteration '{name}' already exists at path '{foundNode.GetProperty("path").GetString()}'. Skipping creation.");
+                    return foundNode.Clone();
                 }
             }
 
-            // Restore POST url for creation
+            // Build POST URL — include project-relative path when creating under a parent
             string url = $"{project}/_apis/wit/classificationnodes/iterations?api-version={ApiVersion}";
+            if (!string.IsNullOrEmpty(postParentPath))
+            {
+                // Use forward-slash separators in the query path (server may expect slash-separated segments)
+                var queryPath = postParentPath.Replace('\\', '/');
+                url += "&path=" + Uri.EscapeDataString(queryPath);
+            }
 
             var body = new System.Text.Json.Nodes.JsonObject
             {
@@ -196,6 +250,95 @@ namespace IterationGenerator
             throw new HttpRequestException($"POST {url} failed for all candidate payloads. Details:\n" + aggErrors.ToString());
         }
 
+        // Create an Area classification node. Works similarly to CreateIterationNodeAsync but targets the 'areas' classification nodes.
+        public async Task<JsonElement> CreateAreaNodeAsync(string project, string parentPath, string name)
+        {
+            // Retrieve full area tree for duplicate detection
+            string allUrl = $"{project}/_apis/wit/classificationnodes/areas?api-version={ApiVersion}&$depth=10";
+            using var getResp = await _http.GetAsync(allUrl);
+            var getRespBody = await getResp.Content.ReadAsStringAsync();
+
+            string desiredFullPath;
+            string? postParentPath = null;
+
+            var parentNorm = string.IsNullOrWhiteSpace(parentPath) ? null : parentPath.Trim();
+            bool parentIsProject = parentNorm != null && string.Equals(parentNorm.Trim('\\'), project, StringComparison.OrdinalIgnoreCase);
+
+            if (parentNorm == null || parentIsProject)
+            {
+                desiredFullPath = "\\" + project + "\\" + name;
+                postParentPath = null;
+            }
+            else
+            {
+                var p = parentNorm.StartsWith("\\") ? parentNorm.TrimStart('\\') : parentNorm;
+                if (p.StartsWith(project + "\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    var after = p.Substring(project.Length).TrimStart('\\');
+                    postParentPath = after; // project-relative without leading slash
+                    desiredFullPath = "\\" + project + "\\" + after + "\\" + name;
+                }
+                else
+                {
+                    postParentPath = p;
+                    desiredFullPath = "\\" + project + "\\" + p + "\\" + name;
+                }
+            }
+
+            if (getResp.IsSuccessStatusCode)
+            {
+                using var doc = JsonDocument.Parse(getRespBody);
+                bool found = false;
+                JsonElement foundNode = default;
+
+                void Traverse(JsonElement node)
+                {
+                    if (found) return;
+                    if (node.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String && p.GetString() == desiredFullPath)
+                    {
+                        found = true;
+                        foundNode = node.Clone();
+                        return;
+                    }
+                    if (node.TryGetProperty("children", out var children) && children.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var child in children.EnumerateArray())
+                        {
+                            Traverse(child);
+                            if (found) return;
+                        }
+                    }
+                }
+
+                Traverse(doc.RootElement);
+                if (found)
+                {
+                    Console.WriteLine($"Area '{name}' already exists at path '{foundNode.GetProperty("path").GetString()}'. Skipping creation.");
+                    return foundNode.Clone();
+                }
+            }
+
+            string url = $"{project}/_apis/wit/classificationnodes/areas?api-version={ApiVersion}";
+            if (!string.IsNullOrEmpty(postParentPath))
+            {
+                var queryPath = postParentPath.Replace('\\', '/');
+                url += "&path=" + Uri.EscapeDataString(queryPath);
+            }
+
+            var body = new System.Text.Json.Nodes.JsonObject { ["name"] = name };
+            using var content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+
+            using var resp = await _http.PostAsync(url, content);
+            var respBody = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException($"POST {url} failed: {(int)resp.StatusCode} {resp.ReasonPhrase}\nResponse body:\n{respBody}\nRequest body:\n{body.ToJsonString()}");
+            }
+
+            using var docResp = JsonDocument.Parse(respBody);
+            return docResp.RootElement.Clone();
+        }
+
         
         // Simple GET request to verify authentication and connectivity
         public async Task<bool> TestConnectionAsync()
@@ -237,7 +380,6 @@ namespace IterationGenerator
         public async Task<JsonElement> GetProjectIterationsJsonAsync(string project, int depth = 10)
         {
             string url = $"{project}/_apis/wit/classificationnodes/iterations?api-version={ApiVersion}&$depth={depth}";
-            Console.WriteLine($"DEBUG: GET Iterations JSON URL: {_http.BaseAddress}{url}");
             using var resp = await _http.GetAsync(url);
             var respBody = await resp.Content.ReadAsStringAsync();
             if (!resp.IsSuccessStatusCode)

@@ -12,7 +12,9 @@ namespace IterationGenerator
     // (single definition kept below)
         public string Pat { get; set; } = "";
         public string ApiVersion { get; set; } = "7.1";
-    public string Mode { get; set; } = "autogenerate";
+        public string Mode { get; set; } = "autogenerate";
+        // node kind to create: 'iteration' (default) or 'area'
+        public string Kind { get; set; } = "iteration";
         public int Depth { get; set; } = 1;
         public int ChildrenPerLevel { get; set; } = 1;
         public string BaseName { get; set; } = "Sprint";
@@ -74,6 +76,9 @@ namespace IterationGenerator
                         break;
                     case "--mode":
                         cfg.Mode = GetArg(args, ++i);
+                        break;
+                    case "--kind":
+                        cfg.Kind = GetArg(args, ++i).ToLowerInvariant();
                         break;
                     default:
                         Console.WriteLine($"Unknown arg: {a}");
