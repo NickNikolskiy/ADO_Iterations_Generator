@@ -80,7 +80,7 @@ namespace IterationGenerator
 
         private void ShowStatusOfCreation()
         {
-            var total = _cfg.ChildrenPerLevel ^ _cfg.Depth;
+            var total = Math.Pow(_cfg.ChildrenPerLevel, _cfg.Depth);
             var created = _created.Count;
             var percent = total <= 0 ? 100 : (int)Math.Min(100, created * 100 / total);
             Console.WriteLine($"Status: Created {created} of {total} {(_cfg.Kind == "area" ? "areas" : "iterations")}. Progress: {percent}%");
